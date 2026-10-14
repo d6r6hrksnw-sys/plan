@@ -94,6 +94,7 @@ palette = "ventusky_temp"   units = ["°C","°F","K"]   isolines = { step = 2 }
 |---|---|---|
 | Global models | NOAA GFS 0.25° (NOMADS / AWS), ECMWF IFS open data 0.25° (CC-BY-4.0), DWD ICON (opendata.dwd.de), CMC GEM | GRIB2, subset by var/level |
 | Regional models | HRRR (US), ICON-D2 / ICON-EU, HRDPS (CA), AROME (FR, data.gouv) | Same pipeline, smaller bbox |
+| Ensembles (spread, probabilities) | NOAA GEFS 0.5° (AWS `noaa-gefs-pds`), ECMWF ENS open data | Whole-map grids for the spread layer, chance-of-rain / chance-of-gusts maps and confidence bands; members reduced to mean, spread and exceedance probabilities in Rust before caching |
 | Point forecasts, multi-model | Open-Meteo forecast, ensemble, historical APIs | Free non-commercial; meteograms, 14-day |
 | Radar | RainViewer (free tier is limited), NOAA MRMS (US), DWD RADOLAN (DE) | Past ~2h + nowcast frames |
 | Satellite | NASA GIBS: GOES-East/West, Himawari, Meteosat | ~10-min geostationary imagery |
@@ -111,12 +112,32 @@ palette = "ventusky_temp"   units = ["°C","°F","K"]   isolines = { step = 2 }
 |---|---|---|
 | **Google Photorealistic 3D** (default when a key is present) | Map Tiles API 3D Tiles in Cesium (direct key, or the Cesium ion asset) | Key + billing; on-screen attribution is required; no long-term tile caching |
 | **Google Satellite 2D** | Map Tiles API 2D satellite as a Cesium imagery layer on the ellipsoid | Cheaper; used for 2D map mode |
-| **Apple** (macOS only) | Rust calls `MKMapSnapshotter` through `objc2-map-kit` for satellite snapshots per tile region, served to Cesium via `earth://apple/{z}/{x}/{y}` | No Flyover 3D; Apple logo and legal text must be shown; not available on Linux/Windows (option is greyed out with an explanation) |
+| **Apple** (macOS only) | Rust calls `MKMapSnapshotter` through `objc2-map-kit` for satellite snapshots per tile region, served to Cesium via `earth://apple/{z}/{x}/{y}` | No Flyover 3D; Apple logo and legal text must be shown; not available on Linux/Windows (option is greyed out with an explanation). **Terms risk:** see below |
 | **NASA** (no key, default fallback) | Blue Marble by day, Black Marble city lights by night, GIBS true-color | Free, public domain, lower resolution up close |
+
+**Apple terms risk.** MapKit's license is written for showing Apple maps in Apple map
+views. Using `MKMapSnapshotter` output as tiles under our own renderer is likely outside
+what it allows, and Apple can revoke MapKit access for an app that does it. So:
+- The Apple option ships **off by default**, behind a setting that explains the risk.
+- It's isolated in `earth/apple.rs` behind a build feature, so it can be removed in one
+  line if Apple objects or if the app is distributed through the Mac App Store.
+- If it's removed, "Apple-like" is covered by the NASA + live-clouds look, and Google
+  remains the high-detail option.
 
 The overlay pass reconstructs each pixel's lat/lon from the depth buffer, so the colors
 lie correctly on mountains and buildings with every provider. Switching providers
 crossfades instead of popping.
+
+**Weather colors over 3D Earth.** Field opacity follows camera altitude so the data and
+the ground never fight:
+- Globe view (above ~2,000 km): full opacity, like Ventusky.
+- Regional (2,000–50 km): opacity eases toward ~60 %; terrain shading shows through
+  (the overlay multiplies with imagery luminance instead of covering it).
+- City (below ~50 km, 3D buildings visible): the field is no longer painted on
+  buildings. It drops to a thin tinted haze on the ground plane plus value labels, so
+  roofs keep their real colors. Particles fly above roof height and shrink in count.
+- A per-layer opacity slider in the legend overrides all of this; radar and lightning
+  always stay fully visible because they're sparse.
 
 ## Ventusky parity: every detail
 
@@ -144,6 +165,17 @@ crossfades instead of popping.
   Palettes come from 1D LUT textures. `ventusky_temp` runs deep violet → blue → cyan →
   green → yellow → orange → red → dark maroon. Each layer has its own Ventusky-style
   palette, plus a colorblind-safe alternative for every one.
+- **Palette spec:** every layer gets a written color scale in `palettes.toml` (value →
+  color stops, units, under/over colors). The stops are measured from Ventusky's legend
+  bars during the site audit and then tuned so neighboring steps stay distinguishable on
+  satellite imagery. Example, temperature in °C:
+  `-40 #2b0a3d · -30 #5b2a86 · -20 #3d5bd9 · -10 #3fa0e0 · 0 #7fd3e6 · 5 #6fcf8a ·
+  10 #b7dd5a · 15 #f2e15b · 20 #f6b13d · 25 #ef7a2f · 30 #d9432b · 40 #8f1d2c · 50 #4a0c1a`.
+  Each layer also gets a colorblind-safe set. A test fails if any layer in
+  `layers.toml` has no palette.
+- **Not copying Ventusky's identity:** colors and behavior are fair to match. The name,
+  logo, icons and exact screen layout aren't, so the Classic theme copies Ventusky's
+  palettes and density but keeps this app's own chrome.
 - **Projections:** 3D globe (orthographic feel at distance, perspective up close), 2D
   Web Mercator, and an animated morph between them (Cesium `morphTo2D`).
 - **Isolines:** labeled pressure and temperature contours, label density tied to zoom.
@@ -168,7 +200,10 @@ crossfades instead of popping.
    imagery, so the globe looks like the actual sky right now.
 3. **Rain-in-minutes nowcast.** Uses radar motion vectors (optical flow in Rust over the
    last frames) to say "rain starts in 12 min, light, ~25 min" for favorite places.
-   Sent as a native notification.
+   Sent as a native notification. **Outside radar coverage** (oceans, much of Africa,
+   Asia, South America) it falls back to Open-Meteo's 15-minute model data, and the
+   chart is labeled "model estimate" with a softer line, so nobody mistakes a model guess
+   for radar.
 4. **Route weather.** Draw a road, flight or sailing route with a departure time. The
    app samples the forecast along it at each ETA and shows a strip of conditions.
 5. **Best-time finder.** Choose an activity (run, cycle, drone, astro / golden-hour
@@ -185,6 +220,36 @@ crossfades instead of popping.
    nowcast, without opening the window.
 10. **Command palette (⌘K / Ctrl+K)** with full keyboard control: layer by name, jump to
     a city, `t+24h`, switch models.
+
+## Local pulse: what's happening in your city
+
+A one-line strip at the top of the forecast sheet (and in the tray view) that tells you
+the single most interesting thing about your place right now. It rotates every ~8 s,
+can be clicked for detail, and is ranked so important things always win:
+**warnings > imminent weather > notable > trivia**.
+
+Ideas for what it can say (rule-based, from data we already have, plus a few small
+feeds):
+- **Rain chance:** "70 % chance of rain after 4 PM" (ensemble probability), "Dry until
+  Thursday".
+- **Lightning:** "Lightning 18 km west, moving toward you" (Blitzortung + strike motion).
+- **Warnings:** "Wind warning until 22:00", tapping opens the polygon on the globe.
+- **Change alerts:** "Pressure dropping fast", "Wind turning north tonight, colder air
+  behind it", "First frost of the season likely tomorrow morning".
+- **Forecast shifts:** "Saturday got wetter since this morning's run".
+- **Records and averages:** "Warmest Oct 14 here since 1998", "Only 20 % of this
+  month's usual rain so far".
+- **Sky:** "Good sunset tonight: high clouds, clear horizon west", "Aurora possible
+  tonight, Kp 6" (NOAA SWPC), "Clear skies for the meteor shower after midnight", "ISS
+  visible at 20:41 for 4 min".
+- **Daylight:** "Days are getting 3 min shorter each day", "Tropical night: won't drop
+  below 20°".
+- **Local color:** "Warmest place in the country right now: Seville, 31°", "Sea is 19°,
+  good for a swim", "Pollen spike tomorrow (birch)", "Saharan dust over you tomorrow".
+
+Tone: short, plain, sometimes a bit dry; never exclamation marks or "Oops!". The same
+messages power optional notifications, with per-type toggles, quiet hours, and a
+"don't repeat within 6 h" rule.
 
 ## Apple-style details
 
@@ -276,6 +341,40 @@ light theme: imagery and weather colors read best on dark chrome. Five ship with
 
 Switching themes animates the token values over 300 ms instead of swapping instantly.
 
+**Indie character on top of the Apple-grade base.** Apple gives the structure
+(clarity, motion, spacing); the personality comes from indie apps that feel made by a
+few people who care: (Not Boring) Weather, Carrot Weather, Halide, Things 3, Panic's apps,
+Mercury Weather. What that means here:
+- **Own icon set:** weather icons, layer icons, app icon and tray icon drawn in-house
+  on a 24 px grid, 1.5 px strokes, slightly rounded ends. Each condition icon has a tiny
+  idle animation (raindrops falling, a cloud drifting 1 px) in SVG, no Lottie.
+- **Texture:** a faint film grain (~2 % opacity) on chrome panels and dithering on every
+  gradient, so surfaces never look flat or banded.
+- **Numbers as the hero:** big temperatures in a display cut, the degree sign kerned
+  tight, units smaller and dimmed. Every number change rolls instead of snapping.
+- **Cursor readout:** a crosshair with a small value tag that follows the cursor on the
+  map, snaps magnetically to nearby cities, and shows the value at that spot for the
+  current layer.
+- **Loading without spinners:** the globe fades up from black as the day/night line
+  sweeps across. New data paints in as a ripple outward from your location. The
+  timeline shows a thin buffer line (like a video player) marking which hours are
+  downloaded.
+- **Ambient mode:** after a few idle minutes the camera slowly drifts along the
+  day/night line with the wind animating, so the app works as a living wallpaper on a
+  second screen. Any input wakes it.
+- **First run:** one screen, no tour. The globe spins toward your location, then the
+  single question "Add a Google key for 3D Earth? (optional)".
+- **Small delights, used sparingly:** the first snow of the season sends a few flakes
+  across the window chrome once; a hidden CRT-radar theme (green phosphor, scanlines)
+  unlocks from the command palette; optional soft click sounds on timeline snaps, off
+  by default.
+- **Hover and depth:** layer-rail icons morph into their labels on hover. Panels over
+  the map get a 1 px inner highlight and a light backdrop blur, only where they sit on
+  imagery; elsewhere they're solid.
+- **Restraint rules:** the accent color appears only on "now", selection and focus.
+  At most one animated element in the chrome at a time. No decoration that doesn't carry
+  information or feedback.
+
 **Motion** (all of it respects the OS "reduce motion" setting):
 - Springs instead of fixed-duration easing: damping ~0.85, response 0.35 s for panels
   and 0.5 s for sheets.
@@ -354,7 +453,7 @@ that run at the same time (separate agents or people) against a contract fixed u
   grid-relative wind rotation), cache, nowcast optical flow, alerts, cyclones, lightning.
 - **Stream B, globe rendering:** Cesium setup, all four Earth providers, field /
   particle / isoline / label passes, crossfades, live sky, split view, time-lapse capture.
-- **Stream C, UI shell:** timeline, layer rail, legend, forecast sheet and all modules,
+- **Stream C, UI shell:** local pulse, icon set, ambient mode, timeline, layer rail, legend, forecast sheet and all modules,
   locations list, calendar weather, share card, settings, command palette, themes, motion.
 - **Stream D, platform:** tray, notifications, haptics, vibrancy, keychain, updater,
   signing, energy management, accessibility, i18n.
@@ -366,6 +465,28 @@ deploy. Integration happens continuously because every stream codes against the 
 and fixture files (a recorded GFS run, a recorded radar sequence) from the start.
 
 ## Verification
+
+**Done when** (each feature has a concrete test; these are the ones that matter most):
+
+| Feature | Done when |
+|---|---|
+| Every layer | Renders from fixture data with its palette and legend, at every level and model it lists, with no blank tiles |
+| Wind particles | No clumping after 10 min; trails fade within ~1 s; ≥60 fps at default density on a mid-range GPU |
+| Timeline | Scrubbing interpolates smoothly between steps of uneven size; "now" lands on the correct local hour across a DST change |
+| Earth providers | Each one loads, shows its attribution, and crossfades to the others; Apple is off by default and hidden on non-macOS |
+| 3D overlay | At city altitude, roofs keep their real colors and labels stay readable; slider overrides work |
+| Nowcast | Radar areas show "radar" and match recorded radar replay within ±5 min; non-radar areas show "model estimate" |
+| Model split / spread | The divider compares two models live; spread layer matches GEFS/ENS fixture values |
+| Local pulse | Warnings always outrank trivia; the same message never repeats within 6 h; works offline from cache |
+| Alerts & notifications | A fixture CAP polygon over a favorite triggers one notification, respects quiet hours |
+| Route weather | Conditions along a fixture route match point forecasts at each ETA |
+| Time-lapse | 30 s export plays back at the chosen fps with no dropped frames |
+| Themes | Switching animates; every screen passes contrast checks in all five themes |
+| Accessibility | Every control is reachable by keyboard and has a screen-reader label; reduce motion stops all non-essential animation |
+| Offline | With the network off, the last run is fully browsable and every source shows "stale" |
+| Startup | First globe frame under 1.5 s, first weather layer under 3 s on a warm cache |
+
+**Automated checks:**
 
 - Golden test per source: decode a fixed GRIB sample and compare the value at known
   points with the Open-Meteo API value for the same run (±0.5 units).
