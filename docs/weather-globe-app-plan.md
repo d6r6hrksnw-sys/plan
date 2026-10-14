@@ -186,6 +186,61 @@ crossfades instead of popping.
 10. **Command palette (⌘K / Ctrl+K)** with full keyboard control: layer by name, jump to
     a city, `t+24h`, switch models.
 
+## Apple-style details
+
+These are the things Apple Weather does that make it feel finished, plus what Apple
+would add on a desktop:
+
+**Forecast sheet modules** (reorderable, each one a small, considered visual):
+- **10-day list with range bars:** each day's low-high bar is drawn on one shared scale
+  and filled with the temperature palette, with a dot marking the current temperature
+  on today's bar.
+- **Next-hour precipitation:** a minute-by-minute intensity chart from the nowcast
+  ("Light rain starting in 12 min, stopping 25 min later").
+- **Plain-language summary:** "Showers clearing by 3 PM. Gusts up to 45 km/h tonight."
+  Built from rule templates over the forecast data, not a language model, so it's
+  instant, deterministic and translatable.
+- **Averages:** "Today's high is 4° above average", from Open-Meteo historical/climate
+  data.
+- **Feels like**, with the reason ("humidity makes it feel warmer").
+- **Wind:** compass dial with gusts.
+- **Pressure:** gauge with a rising/falling arrow.
+- **Humidity** and dew point, with a sentence explaining what the number means.
+- **UV index**, with a "use sun protection 11 AM–4 PM" window.
+- **Sun:** sunrise/sunset on a sun-path arc, plus golden and blue hour.
+- **Moon:** phase render, moonrise/moonset, days to next full moon.
+- **Visibility**, **precipitation totals** (last 24 h and next 24 h), **snow depth**.
+- **Air quality**, with the dominant pollutant.
+- **Pollen**: grass, birch, ragweed from CAMS via Open-Meteo, Europe only, hidden
+  elsewhere.
+
+**Locations list:** each saved place is a card with a live, condition-reactive
+background (cloud drift, rain streaks, snowfall, stars at night) drawn in the theme's
+palette. Drag to reorder. Current location is pinned at the top.
+
+**Desktop and platform touches:**
+- **macOS:** native window vibrancy and inset traffic lights; Force Touch trackpad
+  haptics (`NSHapticFeedbackManager` via objc2) when the timeline snaps to an hour or a
+  layer changes.
+- **Windows:** Mica backdrop.
+- **Trackpad gestures:** pinch to zoom, rotate, two-finger tilt, all with momentum.
+- **Floating mini window:** always-on-top, compact; sits next to the tray view.
+- **Calendar weather:** reads upcoming events with a location (EventKit on macOS, ICS
+  feed elsewhere) and shows the forecast for that place and time ("Rain at your 3 PM
+  in Lyon").
+- **Notable weather:** "Warmest October 14 here since 1998", from historical data.
+- **Share card:** a rendered image of today's forecast for one place, with globe
+  background, saved or copied.
+- **Deep links** (`wx://…`) usable from Shortcuts, Raycast or scripts.
+
+**Accessibility and privacy (Apple treats both as features):**
+- Full keyboard navigation, screen-reader labels on every control, and
+  value descriptions for the map ("Temperature at cursor: 14°, Lyon").
+- Text scaling; reduce-motion and reduce-transparency settings respected;
+  increase-contrast mode; colorblind-safe palettes.
+- Location is used on-device only. No accounts, no analytics, no telemetry. A **Data &
+  Sources** sheet lists every source, model run age and license.
+
 ## UI and motion design
 
 **Direction:** "precision instrument with a bit of warmth". References: Apple Weather
@@ -210,12 +265,13 @@ figures (an instrument-panel feel, and the numbers don't jitter while animating)
 upright weights are bundled, `font-style: normal !important` is set globally, and a
 lint check fails the build if any `italic` / `oblique` appears in the CSS.
 
-**Themes** are token files (`themes/*.toml`: surfaces, text, accent, hairline, chrome
-opacity, palette set), hot-reloaded, and users can add their own. Five ship with the app:
-- **Graphite:** neutral dark, default
-- **Paper:** warm off-white `#F3EFE6`, ink text, terracotta accent
-- **Night Watch:** red-on-black for use at night without losing dark adaptation
+**Themes** are dark-only token files (`themes/*.toml`: surfaces, text, accent,
+hairline, chrome opacity, palette set), hot-reloaded, and users can add their own. No
+light theme: imagery and weather colors read best on dark chrome. Five ship with the app:
+- **Graphite:** neutral near-black, warm-white text, default
+- **Ember:** brown-black with an amber accent; warm without being cute
 - **Tide:** deep blue-grey with a sea-glass accent
+- **Night Watch:** red-on-black for use at night without losing dark adaptation
 - **Classic:** Ventusky-like chrome and palettes
 
 Switching themes animates the token values over 300 ms instead of swapping instantly.
@@ -232,32 +288,92 @@ Switching themes animates the token values over 300 ms instead of swapping insta
 - Condition-reactive forecast sheet: a subtle animated sky band (sun, rain streaks,
   snow) behind the header, drawn in the theme's palette and never as a stock gradient.
 
-## Building it fast
+## Important considerations
 
-A couple of hours with an AI coding agent is realistic for a working core: the globe on
-Google/NASA imagery, wind particles, temperature/precipitation fields, the timeline, the
-point forecast sheet, and the theme system. Full parity and all ten additions are more
-than that. Every layer after the first is config, and every feature after the core
-reuses the same field pipeline. What keeps it fast:
+- **Licenses decide what you can distribute.**
+  - Open-Meteo's free API and Blitzortung are non-commercial; EOX imagery is CC BY-NC.
+  - Google and Apple require visible attribution and forbid bulk tile caching.
+  - Fine for a personal or free app. Selling it means a paid Open-Meteo plan, or going
+    GRIB-only, and dropping Blitzortung.
+- **API keys and cost:**
+  - Google keys are entered by the user and stored in the OS keychain (`keyring`
+    crate), never in the repo or the bundle.
+  - An in-app request counter with a monthly cap stops Google tile requests at a budget
+    the user sets, so a stuck render loop can't run up a bill.
+- **Source fallback chains:**
+  - Every layer lists sources in order: NOAA AWS → NOMADS → Open-Meteo.
+  - NOMADS rate-limits roughly per minute, so it is never the first choice.
+  - Data older than one model cycle shows a visible "stale" chip, never silently.
+  - Offline, the last cached run stays fully browsable.
+- **Meteorological correctness** (where homemade weather maps usually go wrong):
+  - Regional Lambert grids (HRRR, ICON-D2, AROME) store wind as **grid-relative** u/v,
+    which must be rotated to true north before drawing particles.
+  - Fields wrap across the antimeridian; 2D Mercator clips at ±85°.
+  - Models change step size (GFS hourly to 120 h, then 3-hourly; ECMWF 3 h then 6 h).
+    The timeline handles uneven steps, and accumulated precipitation is de-accumulated
+    per step.
+  - Everything is stored in UTC and converted only at display, so DST shifts don't
+    duplicate or drop hours.
+- **Linux webview risk:**
+  - Tauri on Linux uses WebKitGTK, whose WebGL2 is noticeably slower than Chromium's
+    and Safari's.
+  - Mitigation: a render-quality setting (particle count, 3D tiles on/off, resolution
+    scale), auto-picked from a short benchmark the first time the app runs.
+  - Test on Linux early and often.
+- **Energy:**
+  - Render stops when the window is hidden. It drops to 30 fps when the window is
+    unfocused or on battery.
+  - Particles pause in low-power mode.
+  - Background refresh is aligned to model release times instead of polling constantly.
+- **Memory:**
+  - Field textures are budgeted (about 300 MB of GPU memory by default) and evicted
+    furthest-from-cursor first.
+  - The disk cache has a size limit in Settings.
+- **Security:**
+  - Strict CSP in the webview; no remote scripts.
+  - The custom `wx://`/`earth://` handlers validate every path segment against the
+    layer registry.
+- **Shipping:**
+  - Signed auto-updates (`tauri-plugin-updater`).
+  - macOS notarization and Windows code signing, without which Gatekeeper and
+    SmartScreen block the app.
+- **Localization:** strings in Fluent files; locale-aware numbers, dates and units from
+  day one; the plain-language summary templates are translated per locale.
 
-- Cesium does all the globe, tile and camera work; we write only three shaders (field,
-  particles, crossfade).
-- One generic `Source` → `Field` → texture path; layers live in TOML.
-- Open-Meteo covers every point forecast, so no point extraction is needed from GRIB.
-- Port the well-known GPU wind technique (ping-pong particle state textures, from
-  mapbox/webgl-wind) instead of inventing one.
-- No backend to deploy; the relay is optional.
-- Use only crates that already work: `reqwest`, `tokio`, `grib`, `rusqlite`,
-  `image`, `objc2-map-kit`, `tauri-plugin-notification`.
+## Delivery: everything in one build
+
+No MVP and no "core first". The definition of done is everything in this document: all
+layers, all Earth providers, all additions, all themes, all Apple-style modules. To get
+that in one pass without it taking days, the build is split into **parallel workstreams**
+that run at the same time (separate agents or people) against a contract fixed up front:
+
+- **Contract first (shared by all streams):** `layers.toml` schema, the `wx://` binary
+  field format (header + u16 grid), the Tauri IPC command list, theme token names. Once
+  these are frozen, no stream waits on another.
+- **Stream A, data:** scheduler, every `Source` impl, GRIB decode, regridding (incl.
+  grid-relative wind rotation), cache, nowcast optical flow, alerts, cyclones, lightning.
+- **Stream B, globe rendering:** Cesium setup, all four Earth providers, field /
+  particle / isoline / label passes, crossfades, live sky, split view, time-lapse capture.
+- **Stream C, UI shell:** timeline, layer rail, legend, forecast sheet and all modules,
+  locations list, calendar weather, share card, settings, command palette, themes, motion.
+- **Stream D, platform:** tray, notifications, haptics, vibrancy, keychain, updater,
+  signing, energy management, accessibility, i18n.
+
+Efficiency comes from reuse, not cutting scope: Cesium does the globe/tile/camera work;
+three shaders cover every layer; every layer after the first is config; Open-Meteo covers
+all point data; the GPU wind technique is ported from mapbox/webgl-wind; no backend to
+deploy. Integration happens continuously because every stream codes against the contract
+and fixture files (a recorded GFS run, a recorded radar sequence) from the start.
 
 ## Verification
 
 - Golden test per source: decode a fixed GRIB sample and compare the value at known
   points with the Open-Meteo API value for the same run (±0.5 units).
-- Screenshot diff of the globe at fixed camera, time and layer for each theme and Earth
-  provider (Playwright against the Tauri webview build).
+- Screenshot diff of the globe and every panel at fixed camera, time and layer for each
+  theme and Earth provider (Playwright against the Tauri webview build).
 - Timeline scrub must stay at 60 fps with particles on a mid-range GPU (frame-time
   overlay in a debug build).
+- Every entry in `layers.toml` has a fixture-backed render test, so no layer ships blank.
 - Lint gate: no `italic`/`oblique` in the CSS; every API key comes from Settings or the
   keychain and is never committed.
 - Manual check: each Earth provider shows its required attribution, and the Apple option
