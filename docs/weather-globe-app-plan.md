@@ -105,6 +105,7 @@ palette = "ventusky_temp"   units = ["°C","°F","K"]   isolines = { step = 2 }
 | Alerts | NWS CAP, MeteoAlarm (EU) | |
 | Webcams | Windy Webcams API | Ventusky has webcams; so do we |
 | Geocoding | Open-Meteo geocoding, Nominatim fallback | |
+| Local pulse extras | NOAA SWPC (Kp / aurora), CelesTrak TLEs + `sgp4` crate (ISS passes), meteor shower calendar | Small, cached daily |
 
 ## Earth imagery (Settings → Earth)
 
